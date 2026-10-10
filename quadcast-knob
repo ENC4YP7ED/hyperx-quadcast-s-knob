@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""quadcast-knob: make the HyperX QuadCast S knob change the mic gain on Linux.
+
+The knob does not change the gain inside the mic. It sends HID "Volume
+Increment/Decrement" keys from the mic's own USB interface. Windows ties a USB
+audio device's volume keys to that device, so there they move the mic level.
+Linux does not: they arrive as ordinary volume keys, and the desktop changes
+the speaker volume instead.
+
+This daemon grabs the mic's key device exclusively (EVIOCGRAB), so the desktop
+no longer sees those keys, and turns each click into a 1 dB step on the mic's
+PipeWire/PulseAudio source. PipeWire maps that onto the mic's hardware gain.
+It stops at 100 %, because above that PipeWire would amplify in software.
+
+Environment (optional):
+  QUADCAST_KNOB_USB      vendor:product of the mic   (default 03f0:0294, QuadCast S)
+  QUADCAST_KNOB_DEVICE   the input event device      (default: found via sysfs)
+  QUADCAST_KNOB_SOURCE   the source name             (default: first alsa_input with "QuadCast")
+  QUADCAST_KNOB_STEP_DB  dB per click                (default 1)
+"""
+import fcntl, glob, os, re, struct, subprocess, sys, time
+
+USB = os.environ.get("QUADCAST_KNOB_USB", "03f0:0294").lower()
+STEP_DB = float(os.environ.get("QUADCAST_KNOB_STEP_DB", "1"))
+EVIOCGRAB = 0x40044590                    # _IOW('E', 0x90, int)
+EV_KEY, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 1, 114, 115
+EVENT = struct.Struct("llHHi")            # struct input_event (64-bit): timeval, type, code, value
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def has_key(event_dir, code):
+    """True if the input device's key capability bitmap contains `code`."""
+    try:
+        words = open(os.path.join(event_dir, "device/capabilities/key")).read().split()
+    except OSError:
+        return False
+    bits = 0
+    for w in words:                       # most significant word first
+        bits = (bits << 64) | int(w, 16)
+    return bool(bits >> code & 1)
+
+
+def find_device():
+    if os.environ.get("QUADCAST_KNOB_DEVICE"):
+        return os.environ["QUADCAST_KNOB_DEVICE"]
+    vendor, product = USB.split(":")
+    for ev in sorted(glob.glob("/sys/class/input/event*")):
+        try:
+            v = open(os.path.join(ev, "device/id/vendor")).read().strip().lower()
+            p = open(os.path.join(ev, "device/id/product")).read().strip().lower()
+        except OSError:
+            continue
+        if (v, p) == (vendor, product) and has_key(ev, KEY_VOLUMEUP):
+            return "/dev/input/" + os.path.basename(ev)
+    return None
+
+
+def find_source():
+    if os.environ.get("QUADCAST_KNOB_SOURCE"):
+        return os.environ["QUADCAST_KNOB_SOURCE"]
+    out = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        name = line.split("\t")[1] if "\t" in line else ""
+        if name.startswith("alsa_input.") and "quadcast" in name.lower():
+            return name
+    return None
+
+
+def volume(source):
+    out = subprocess.run(["pactl", "get-source-volume", source], capture_output=True, text=True).stdout
+    m = re.search(r"(\d+)%", out)
+    return int(m.group(1)) if m else None
+
+
+def step(direction):
+    source = find_source()
+    before = volume(source) if source else None
+    if before is None:
+        log("mic source not found; click ignored")
+        return
+    if direction > 0 and before >= 100:
+        return                            # already at the hardware maximum
+    sign = "+" if direction > 0 else "-"
+    subprocess.run(["pactl", "set-source-volume", source, f"{sign}{STEP_DB:g}dB"], check=False)
+    after = volume(source)
+    if after is not None and after > 100:  # never into software amplification
+        subprocess.run(["pactl", "set-source-volume", source, "100%"], check=False)
+        after = 100
+    log(f"knob {'up' if direction > 0 else 'down'}: mic {before}% -> {after}%")
+
+
+def serve(dev):
+    fd = os.open(dev, os.O_RDONLY)
+    try:
+        fcntl.ioctl(fd, EVIOCGRAB, 1)     # the desktop stops seeing these keys
+        log(f"grabbed {dev}; the knob now sets the mic gain")
+        while True:
+            data = os.read(fd, EVENT.size * 64)
+            if not data:
+                return
+            for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, typ, code, value = EVENT.unpack_from(data, i)
+                if typ != EV_KEY or value == 0:   # 1 = press, 2 = repeat, 0 = release
+                    continue
+                if code == KEY_VOLUMEUP:
+                    step(+1)
+                elif code == KEY_VOLUMEDOWN:
+                    step(-1)
+                else:
+                    log(f"swallowed key {code}")  # mute and media keys of the mic's own interface
+    finally:
+        os.close(fd)
+
+
+def main():
+    waiting = False
+    while True:                           # survive unplugging: wait for the mic to come back
+        dev = find_device()
+        if not dev:
+            if not waiting:
+                log(f"waiting for the mic ({USB}) to be plugged in")
+                waiting = True
+            time.sleep(2)
+            continue
+        waiting = False
+        try:
+            serve(dev)
+        except PermissionError:
+            log(f"no permission on {dev}: is the udev rule installed (install.sh) and are you logged in at the seat?")
+            time.sleep(10)
+        except OSError as e:
+            log(f"device gone ({e.strerror}); waiting")
+            time.sleep(1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

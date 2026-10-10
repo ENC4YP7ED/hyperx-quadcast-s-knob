@@ -1,0 +1,4 @@
+# Give the logged-in user access to the HyperX QuadCast S's key interface only
+# (interface 03 of 03f0:0294), so quadcast-knob can read and grab it. No need for
+# the "input" group, which would expose every keyboard on the machine.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_VENDOR_ID}=="03f0", ENV{ID_MODEL_ID}=="0294", ENV{ID_USB_INTERFACE_NUM}=="03", TAG+="uaccess"
