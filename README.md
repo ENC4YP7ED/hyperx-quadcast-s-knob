@@ -4,7 +4,16 @@ On Windows, turning the knob on the HyperX QuadCast S changes the mic gain. On
 Linux it doesn't, and on most desktops it changes your **speaker** volume
 instead. This makes the knob control the mic again.
 
-## Why
+> **Status, 10 Oct 2026: the knob itself is not fixed yet.** A physical test
+> on my own QuadCast S showed the knob sends **nothing** over USB (no keys, no
+> reports) and does not change the recorded level on Linux. The explanation
+> below was a wrong first guess, made from the mic's HID descriptor. What this
+> tool really does today: it stops the mic's volume keys reaching the desktop,
+> if your unit sends them, and `--lock-mic-volume` stops apps from changing the
+> mic level, which works as described. The investigation is ongoing; watch
+> this repo before installing for the knob alone.
+
+## Why (first guess, disproved on the author's unit)
 
 The knob doesn't change the gain inside the mic. It sends ordinary "volume
 up / volume down" keys from the mic's own USB interface. Windows links a USB
