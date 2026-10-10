@@ -2,7 +2,7 @@
 
 On Windows, turning the knob on the HyperX QuadCast S changes the mic gain. On
 Linux it doesn't, and on most desktops it changes your **speaker** volume
-instead. This makes the knob control the mic again.
+instead. This project set out to make the knob control the mic again; see the status below.
 
 > **Status, 10 Oct 2026: the knob itself is not fixed yet.** A physical test
 > on my own QuadCast S showed the knob sends **nothing** over USB (no keys, no
